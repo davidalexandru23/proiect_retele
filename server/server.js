@@ -1,0 +1,272 @@
+const net = require("net");
+const { decodeMessage, sendMessage } = require("./protocol");
+
+const PORT = Number(process.env.PORT || 5000);
+
+let urmatorClientId = 1;
+const clientiConectati = new Map();
+const scripturiByName = new Map();
+const comenziByName = new Map();
+
+function esteTextValid(valoare) {
+  return typeof valoare === "string" && valoare.trim().length > 0;
+}
+
+function trimLista(listaValori) {
+  if (!Array.isArray(listaValori)) {
+    return [];
+  }
+
+  return listaValori
+    .filter((valoare) => typeof valoare === "string")
+    .map((valoare) => valoare.trim())
+    .filter((valoare) => valoare.length > 0);
+}
+
+function raspundeEroare(clientSocket, mesaj) {
+  sendMessage(clientSocket, {
+    type: "ERROR",
+    message: mesaj
+  });
+}
+
+function gestioneazaHello(clientSocket, clientInfo, mesaj) {
+  const clientName = esteTextValid(mesaj.clientName) ? mesaj.clientName.trim() : "fara_nume";
+  clientInfo.clientName = clientName;
+
+  sendMessage(clientSocket, {
+    type: "OK",
+    message: `Salut ${clientName}, esti conectat ca ${clientInfo.clientId}`,
+    clientId: clientInfo.clientId
+  });
+}
+
+function gestioneazaPublishScripts(clientSocket, clientInfo, mesaj) {
+  if (clientInfo.aPublicatScripturi) {
+    raspundeEroare(clientSocket, "Lista de scripturi nu mai poate fi modificata in aceasta sesiune");
+    return;
+  }
+
+  const listaScripturi = trimLista(mesaj.scripts);
+
+  if (listaScripturi.length === 0) {
+    raspundeEroare(clientSocket, "Lista de scripturi nu poate fi goala");
+    return;
+  }
+
+  const scripturiUnice = [...new Set(listaScripturi)];
+
+  for (const numeScript of scripturiUnice) {
+    const proprietarCurent = scripturiByName.get(numeScript);
+
+    if (proprietarCurent && proprietarCurent !== clientInfo.clientId) {
+      raspundeEroare(clientSocket, `Scriptul ${numeScript} este deja publicat de alt client`);
+      return;
+    }
+  }
+
+  for (const numeScript of scripturiUnice) {
+    scripturiByName.set(numeScript, clientInfo.clientId);
+    clientInfo.scripturiPublicate.add(numeScript);
+  }
+
+  clientInfo.aPublicatScripturi = true;
+
+  sendMessage(clientSocket, {
+    type: "OK",
+    message: "Scripturi publicate cu succes"
+  });
+}
+
+function gestioneazaPublishCommand(clientSocket, mesaj) {
+  const commandName = esteTextValid(mesaj.commandName) ? mesaj.commandName.trim() : "";
+  const pipeline = trimLista(mesaj.pipeline);
+
+  if (!commandName) {
+    raspundeEroare(clientSocket, "Numele comenzii nu poate fi gol");
+    return;
+  }
+
+  if (pipeline.length === 0) {
+    raspundeEroare(clientSocket, "Pipeline-ul nu poate fi gol");
+    return;
+  }
+
+  for (const numeScript of pipeline) {
+    if (!scripturiByName.has(numeScript)) {
+      raspundeEroare(clientSocket, `Scriptul ${numeScript} nu exista`);
+      return;
+    }
+  }
+
+  comenziByName.set(commandName, [...pipeline]);
+
+  sendMessage(clientSocket, {
+    type: "OK",
+    message: `Comanda ${commandName} a fost publicata`
+  });
+}
+
+function gestioneazaDeleteCommand(clientSocket, mesaj) {
+  const commandName = esteTextValid(mesaj.commandName) ? mesaj.commandName.trim() : "";
+
+  if (!commandName) {
+    raspundeEroare(clientSocket, "Numele comenzii nu poate fi gol");
+    return;
+  }
+
+  if (!comenziByName.has(commandName)) {
+    raspundeEroare(clientSocket, `Comanda ${commandName} nu exista`);
+    return;
+  }
+
+  comenziByName.delete(commandName);
+
+  sendMessage(clientSocket, {
+    type: "OK",
+    message: `Comanda ${commandName} a fost stearsa`
+  });
+}
+
+function construiesteState() {
+  const clients = [...clientiConectati.values()].map((clientInfo) => ({
+    clientId: clientInfo.clientId,
+    clientName: clientInfo.clientName,
+    scripts: [...clientInfo.scripturiPublicate]
+  }));
+
+  const scriptsByName = Object.fromEntries(scripturiByName.entries());
+  const commandsByName = {};
+
+  for (const [commandName, pipeline] of comenziByName.entries()) {
+    commandsByName[commandName] = {
+      pipeline: [...pipeline],
+      missingScripts: pipeline.filter((numeScript) => !scripturiByName.has(numeScript))
+    };
+  }
+
+  return {
+    type: "STATE",
+    clients,
+    scriptsByName,
+    commandsByName
+  };
+}
+
+function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
+  if (!mesaj || typeof mesaj !== "object" || typeof mesaj.type !== "string") {
+    raspundeEroare(clientSocket, "Mesaj invalid");
+    return;
+  }
+
+  switch (mesaj.type) {
+    case "HELLO":
+      gestioneazaHello(clientSocket, clientInfo, mesaj);
+      break;
+    case "PUBLISH_SCRIPTS":
+      gestioneazaPublishScripts(clientSocket, clientInfo, mesaj);
+      break;
+    case "PUBLISH_COMMAND":
+      gestioneazaPublishCommand(clientSocket, mesaj);
+      break;
+    case "DELETE_COMMAND":
+      gestioneazaDeleteCommand(clientSocket, mesaj);
+      break;
+    case "LIST_STATE":
+      sendMessage(clientSocket, construiesteState());
+      break;
+    default:
+      raspundeEroare(clientSocket, `Tip de mesaj necunoscut: ${mesaj.type}`);
+  }
+}
+
+function eliminaClient(clientInfo) {
+  clientiConectati.delete(clientInfo.clientId);
+
+  for (const numeScript of clientInfo.scripturiPublicate) {
+    if (scripturiByName.get(numeScript) === clientInfo.clientId) {
+      scripturiByName.delete(numeScript);
+    }
+  }
+}
+
+const serverTcp = net.createServer((clientSocket) => {
+  const clientId = `client_${urmatorClientId++}`;
+  const clientInfo = {
+    clientId,
+    clientName: "necunoscut",
+    clientSocket,
+    scripturiPublicate: new Set(),
+    aPublicatScripturi: false
+  };
+
+  clientiConectati.set(clientId, clientInfo);
+  console.log(`Client conectat: ${clientId}`);
+
+  let inputBuffer = "";
+  let conexiuneInchisa = false;
+
+  clientSocket.setEncoding("utf8");
+
+  clientSocket.on("data", (inputBytes) => {
+    inputBuffer += inputBytes;
+    const liniiMesaj = inputBuffer.split("\n");
+    inputBuffer = liniiMesaj.pop();
+
+    for (const linieMesaj of liniiMesaj) {
+      if (!linieMesaj.trim()) {
+        continue;
+      }
+
+      try {
+        const mesaj = decodeMessage(linieMesaj);
+        gestioneazaMesaj(clientSocket, clientInfo, mesaj);
+      } catch (eroare) {
+        raspundeEroare(clientSocket, "JSON invalid");
+      }
+    }
+  });
+
+  clientSocket.on("end", () => {
+    if (!conexiuneInchisa) {
+      conexiuneInchisa = true;
+      eliminaClient(clientInfo);
+      console.log(`Client deconectat: ${clientId}`);
+    }
+  });
+
+  clientSocket.on("close", () => {
+    if (!conexiuneInchisa) {
+      conexiuneInchisa = true;
+      eliminaClient(clientInfo);
+      console.log(`Client deconectat: ${clientId}`);
+    }
+  });
+
+  clientSocket.on("error", (eroare) => {
+    console.log(`Eroare client ${clientId}: ${eroare.message}`);
+  });
+});
+
+serverTcp.on("error", (eroare) => {
+  console.error(`Eroare server: ${eroare.message}`);
+});
+
+serverTcp.listen(PORT, () => {
+  console.log(`Serverul TCP asculta pe portul ${PORT}`);
+});
+
+function inchideServer() {
+  console.log("Serverul se inchide...");
+
+  for (const clientInfo of clientiConectati.values()) {
+    clientInfo.clientSocket.end();
+  }
+
+  serverTcp.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on("SIGINT", inchideServer);
+process.on("SIGTERM", inchideServer);

@@ -1,0 +1,7 @@
+services:
+  server:
+    build:
+      context: ./server
+    container_name: remote-script-engine-server
+    ports:
+      - "5000:5000"

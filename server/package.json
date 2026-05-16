@@ -1,0 +1,10 @@
+{
+  "name": "remote-script-engine-server",
+  "version": "1.0.0",
+  "description": "Server TCP simplu pentru motorul de executie scripturi la distanta",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}
