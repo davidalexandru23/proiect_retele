@@ -153,6 +153,60 @@ function construiesteState() {
   };
 }
 
+function gestioneazaExecuteCommand(clientSocket, mesaj) {
+  const numeFisier = esteTextValid(mesaj.fileName) ? mesaj.fileName.trim() : "";
+  const continutBase64 = mesaj.contentBase64;
+
+  if (!numeFisier) {
+    raspundeEroare(clientSocket, "Fisierul nu poate fi gol");
+    return;
+  }
+
+  if (typeof continutBase64 !== "string" || continutBase64.trim().length === 0) {
+    raspundeEroare(clientSocket, "Continut Base64 invalid");
+    return;
+  }
+
+  // Extrage numele comenzii din nume fisier (fara path)
+  const numeComanda = numeFisier.split("/").pop().split("\\").pop();
+
+  if (!comenziByName.has(numeComanda)) {
+    raspundeEroare(clientSocket, `Comanda ${numeComanda} nu exista`);
+    return;
+  }
+
+  const pipeline = comenziByName.get(numeComanda);
+
+  // Verifica daca toate scripturile din pipeline sunt disponibile
+  const scripturiLipsa = pipeline.filter((numeScript) => !scripturiByName.has(numeScript));
+
+  if (scripturiLipsa.length > 0) {
+    raspundeEroare(
+      clientSocket,
+      `Comenziul nu poate fi executata. Scripturi lipsa: ${scripturiLipsa.join(", ")}`
+    );
+    return;
+  }
+
+  // Incearca decodarea Base64 pentru a valida formatul
+  try {
+    Buffer.from(continutBase64, "base64").toString();
+  } catch (eroare) {
+    raspundeEroare(clientSocket, "Continut Base64 nevalid");
+    return;
+  }
+
+  // TODO: Trimite inputul catre clientul detinator al primului script din pipeline
+  // TODO: Executa scripturile in pipeline pe clientii care le detin
+  // TODO: Propaga outputul prin pipeline
+  // TODO: Trimite raspunsul final catre clientul care a cerut executia
+
+  sendMessage(clientSocket, {
+    type: "OK",
+    message: `Cererea de executie pentru comanda ${numeComanda} a fost acceptata`
+  });
+}
+
 function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
   if (!mesaj || typeof mesaj !== "object" || typeof mesaj.type !== "string") {
     raspundeEroare(clientSocket, "Mesaj invalid");
@@ -174,6 +228,9 @@ function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
       break;
     case "LIST_STATE":
       sendMessage(clientSocket, construiesteState());
+      break;
+    case "EXECUTE_COMMAND_REQUEST":
+      gestioneazaExecuteCommand(clientSocket, mesaj);
       break;
     default:
       raspundeEroare(clientSocket, `Tip de mesaj necunoscut: ${mesaj.type}`);

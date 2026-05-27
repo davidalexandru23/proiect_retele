@@ -1,5 +1,6 @@
 const net = require("net");
 const readline = require("readline");
+const fs = require("fs");
 const { decodeMessage, sendMessage } = require("./protocol");
 
 const SERVER_HOST = process.env.SERVER_HOST || "127.0.0.1";
@@ -50,6 +51,7 @@ function afiseazaAjutor() {
   console.log("  publish-scripts upper,prefix");
   console.log("  publish-command procesare upper,prefix");
   console.log("  delete-command procesare");
+  console.log("  execute-file cale/catre/fisier");
   console.log("  list-state");
   console.log("  help");
   console.log("  exit");
@@ -87,6 +89,28 @@ function trimiteDinComanda(linieInput) {
         type: "DELETE_COMMAND",
         commandName
       });
+      break;
+    }
+    case "execute-file": {
+      const caleFisier = restArgumente[0] || "";
+      if (!caleFisier) {
+        console.log("Eroare: trebuie sa specifici calea fisierului");
+        break;
+      }
+
+      try {
+        const continutBytes = fs.readFileSync(caleFisier);
+        const continutBase64 = continutBytes.toString("base64");
+        const numeFisier = caleFisier.split("/").pop().split("\\").pop();
+
+        sendMessage(clientSocket, {
+          type: "EXECUTE_COMMAND_REQUEST",
+          fileName: numeFisier,
+          contentBase64: continutBase64
+        });
+      } catch (eroare) {
+        console.log(`Eroare la citirea fisierului: ${eroare.message}`);
+      }
       break;
     }
     case "list-state":

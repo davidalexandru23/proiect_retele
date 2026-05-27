@@ -2,7 +2,7 @@
 
 Acest proiect este baza unei aplicatii client-server simple pentru materia Retele de Calculatoare. Scopul final este executia de pipeline-uri de scripturi Bash pe clienti diferiti, coordonate de un server central.
 
-In etapa 1 este implementata doar infrastructura de baza:
+In etapele 1-2 sunt implementate:
 
 - server TCP concurent
 - clienti TCP simpli
@@ -10,8 +10,10 @@ In etapa 1 este implementata doar infrastructura de baza:
 - publicare scripturi disponibile
 - publicare si stergere comenzi compuse
 - listare stare server
+- baza pentru executia de comenzi compuse (validare cerere)
 
-Executia reala a scripturilor nu este implementata inca.
+In etapa 2, serverul accepta cereri de executie, valideaza comenzile si fisierele, dar nu executa inca scripturile pe tot pipeline-ul.
+Executia reala si propagarea datelor prin pipeline vor fi implementate in etapele urmatoare.
 
 
 
@@ -62,7 +64,7 @@ Exemplu:
 {"type":"HELLO","clientName":"clientA"}
 ```
 
-Mesaje acceptate in etapa 1:
+Mesaje acceptate:
 
 ```json
 {"type":"HELLO","clientName":"clientA"}
@@ -70,6 +72,7 @@ Mesaje acceptate in etapa 1:
 {"type":"PUBLISH_COMMAND","commandName":"procesare","pipeline":["upper","prefix"]}
 {"type":"DELETE_COMMAND","commandName":"procesare"}
 {"type":"LIST_STATE"}
+{"type":"EXECUTE_COMMAND_REQUEST","fileName":"date.txt","contentBase64":"..."}
 ```
 
 Exemple de raspunsuri:
@@ -122,12 +125,19 @@ Clientul se conecteaza implicit la `127.0.0.1:5000`.
 publish-scripts upper,prefix
 publish-command procesare upper,prefix
 delete-command procesare
+execute-file cale/catre/fisier
 list-state
 help
 exit
 ```
 
-## Comportament important in etapa 1
+Comanda `execute-file`:
+- citeste continutul fisierului
+- foloseste doar numele fisierului (fara cale) ca identificator de comanda
+- encodeaza continutul in Base64
+- trimite cererea catre server pentru validare si executie
+
+## Comportament important in etapele 1-2
 
 - Lista de scripturi a unui client poate fi publicata o singura data intr-o sesiune.
 - Daca un alt client a publicat deja un script, serverul respinge cererea.
@@ -136,8 +146,10 @@ exit
 - Comenzile compuse nu sunt sterse automat la deconectare.
 - Dupa deconectare, `list-state` poate arata comenzi cu `missingScripts`, adica pipeline-uri care nu mai pot fi executate complet in starea curenta.
 - Serverul raspunde cu eroare controlata la JSON invalid si continua sa ruleze.
+- Cererea `EXECUTE_COMMAND_REQUEST` este acceptata doar daca comanda exista si toate scripturile din pipeline sunt disponibile.
+- In etapa 2, serverul doar valideaza cererea, nu executa inca scripturile.
 
-## Ce este implementat in etapa 1
+## Ce este implementat in etapele 1-2
 
 - comunicatie TCP simpla intre server si clienti
 - mesaje JSON separate pe linii
@@ -147,8 +159,13 @@ exit
 - listare stare server
 - validari de baza si mesaje clare de eroare
 - containerizare Docker pentru server
+- cererea `EXECUTE_COMMAND_REQUEST` cu validare de comanda, fisier si disponibilitate scripturi
+- citirea fisierelor in client cu encoding Base64
+- raportare controlata de erori la executie invalida
 
 ## Testare manuala recomandata
+
+### Testare etapele 1-2 (validare cerere executie)
 
 1. Porneste serverul:
 
@@ -168,13 +185,34 @@ exit
    node client.js clientB
    ```
 
-3. In `clientA`, ruleaza:
+3. In `clientA`, publica scripturi si comanda:
 
    ```text
    publish-scripts upper,prefix
    publish-command procesare upper,prefix
    list-state
    ```
+
+4. Creeaza un fisier local pentru test:
+
+   ```bash
+   echo "test content" > procesare
+   ```
+
+5. In `clientA`, incearca sa executi comanda:
+
+   ```text
+   execute-file procesare
+   ```
+
+   Serverul trebuie sa raspunda: `"OK": "Cererea de executie pentru comanda procesare a fost acceptata"`
+
+6. Testeaza erori de validare:
+   - `execute-file necunoscuta` trebuie sa raspunda cu eroare de comanda inexistenta
+   - `execute-file` fara argument trebuie sa afiseze eroare local
+   - Sterge o comanda cu `delete-command procesare` si apoi `execute-file procesare` trebuie sa raspunda cu eroare
+
+### Testare etapele 1 (validari existente)
 
 4. In `clientB`, verifica erorile:
 
@@ -211,10 +249,17 @@ exit
 
 ## TODO pentru etapele urmatoare
 
-- upload fisier pentru executie
-- serverul identifica comanda dupa numele fisierului
-- serverul trimite input catre clientul care detine scriptul
-- clientul ruleaza script Bash local
-- clientul trimite output inapoi la server
-- serverul trimite outputul catre urmatorul script
-- serverul returneaza rezultatul final catre clientul solicitant
+### Etapa 3 - Executie pe primul script
+- serverul trimite `EXECUTE_SCRIPT` catre clientul care detine primul script din pipeline
+- mesajul contine: scriptName, inputContent (Base64)
+- clientul ruleaza scriptul Bash local cu inputul
+
+### Etapa 4 - Propagare prin pipeline
+- clientul intoarce `SCRIPT_OUTPUT` cu outputul executiei
+- serverul trimite outputul catre urmatorul script din pipeline
+- procesul continua pana la sfarsitul pipeline-ului
+
+### Etapa 5 - Raspuns final
+- serverul colecteaza outputul final
+- serverul trimite `EXECUTE_RESPONSE` catre clientul solicitant cu rezultatul
+- clientul afiseaza rezultatul final
