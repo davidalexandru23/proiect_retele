@@ -235,6 +235,21 @@ function afiseazaMesajServer(mesaj) {
     return;
   }
 
+  // Gestioneaza primirea raspunsului final al executiei intregului pipeline
+  if (mesaj.type === "EXECUTE_RESPONSE") {
+    const { executionId, outputContent } = mesaj;
+    const caleOutput = path.join(process.cwd(), `rezultat_${executionId}.bin`);
+    
+    try {
+      const outputBytes = Buffer.from(outputContent, "base64");
+      fs.writeFileSync(caleOutput, outputBytes);
+      console.log(`\nExecutia s-a incheiat cu succes! Fisierul rezultat a fost salvat la: ${caleOutput}`);
+    } catch (eroare) {
+      console.log(`\nEroare la salvarea fisierului rezultat: ${eroare.message}`);
+    }
+    return;
+  }
+
   if (mesaj.message) {
     console.log(`${mesaj.type}: ${mesaj.message}`);
     return;

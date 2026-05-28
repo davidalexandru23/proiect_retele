@@ -5,3 +5,15 @@ services:
     container_name: remote-script-engine-server
     ports:
       - "5000:5000"
+
+  client:
+    build:
+      context: ./client
+    environment:
+      - SERVER_HOST=server
+    volumes:
+      - ./client:/app
+    stdin_open: true
+    tty: true
+    profiles:
+      - donotstart
