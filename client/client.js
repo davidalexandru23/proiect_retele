@@ -1,6 +1,8 @@
 const net = require("net");
 const readline = require("readline");
 const fs = require("fs");
+const path = require("path");
+const { execFile } = require("child_process");
 const { decodeMessage, sendMessage } = require("./protocol");
 
 const SERVER_HOST = process.env.SERVER_HOST || "127.0.0.1";
@@ -9,6 +11,8 @@ const clientName = process.argv[2] || "client_local";
 
 let inputBuffer = "";
 let conexiuneActiva = false;
+const scripturiLocale = new Set();
+const SCRIPTS_DIR = path.join(__dirname, "scripts");
 
 const clientSocket = net.createConnection(
   {
@@ -67,6 +71,8 @@ function trimiteDinComanda(linieInput) {
   switch (numeComanda) {
     case "publish-scripts": {
       const listaScripturi = parseLista(restArgumente.join(" "));
+      // Salvam local scripturile publicate pentru a le putea valida la EXECUTE_SCRIPT
+      listaScripturi.forEach((s) => scripturiLocale.add(s));
       sendMessage(clientSocket, {
         type: "PUBLISH_SCRIPTS",
         scripts: listaScripturi
@@ -131,10 +137,101 @@ function trimiteDinComanda(linieInput) {
   }
 }
 
+function gestioneazaExecuteScript(mesaj) {
+  const { scriptName, inputContent, executionId } = mesaj;
+
+  console.log(`\nEXECUTE_SCRIPT primit: script=${scriptName}, executionId=${executionId}`);
+
+  // Valideaza ca scriptul exista in scripturile publicate
+  if (!scripturiLocale.has(scriptName)) {
+    console.log(`Eroare: scriptul ${scriptName} nu este publicat local`);
+    sendMessage(clientSocket, {
+      type: "ERROR",
+      message: `Scriptul ${scriptName} nu este publicat pe acest client`
+    });
+    return;
+  }
+
+  // Decodifica inputContent din Base64
+  let inputDecodat;
+  try {
+    inputDecodat = Buffer.from(inputContent, "base64").toString("utf8");
+  } catch (eroare) {
+    console.log(`Eroare: inputContent Base64 nevalid`);
+    sendMessage(clientSocket, {
+      type: "ERROR",
+      message: `Input Base64 nevalid pentru scriptul ${scriptName}`
+    });
+    return;
+  }
+
+  // Calea catre scriptul Bash
+  const caleFisierScript = path.join(SCRIPTS_DIR, `${scriptName}.sh`);
+
+  // Verifica daca fisierul scriptului exista pe disc
+  if (!fs.existsSync(caleFisierScript)) {
+    console.log(`Eroare: fisierul ${caleFisierScript} nu exista pe disc`);
+    sendMessage(clientSocket, {
+      type: "ERROR",
+      message: `Fisierul scriptului ${scriptName}.sh nu exista pe disc`
+    });
+    return;
+  }
+
+  // Ruleaza scriptul Bash cu inputul primit
+  console.log(`Rulez: bash ${caleFisierScript}`);
+
+  const procesScript = execFile("bash", [caleFisierScript], {
+    timeout: 30000,
+    maxBuffer: 1024 * 1024
+  }, (eroare, stdout, stderr) => {
+    if (eroare) {
+      console.log(`Eroare la executia scriptului ${scriptName}: ${eroare.message}`);
+      if (stderr) {
+        console.log(`stderr: ${stderr}`);
+      }
+      // Capturam eroarea si trimitem outputul cu eroarea
+      const eroareText = `Eroare executie ${scriptName}: ${eroare.message}\n${stderr || ""}`;
+      const outputContent = Buffer.from(eroareText, "utf8").toString("base64");
+
+      sendMessage(clientSocket, {
+        type: "SCRIPT_OUTPUT",
+        scriptName,
+        outputContent,
+        executionId
+      });
+      return;
+    }
+
+    console.log(`Scriptul ${scriptName} a terminat cu succes`);
+    console.log(`Output: ${stdout}`);
+
+    // Encodeaza outputul in Base64
+    const outputContent = Buffer.from(stdout, "utf8").toString("base64");
+
+    sendMessage(clientSocket, {
+      type: "SCRIPT_OUTPUT",
+      scriptName,
+      outputContent,
+      executionId
+    });
+  });
+
+  // Trimite inputul pe stdin al procesului
+  procesScript.stdin.write(inputDecodat);
+  procesScript.stdin.end();
+}
+
 function afiseazaMesajServer(mesaj) {
   if (mesaj.type === "STATE") {
     console.log("STATE:");
     console.log(JSON.stringify(mesaj, null, 2));
+    return;
+  }
+
+  // Gestioneaza cererea de executie script de la server
+  if (mesaj.type === "EXECUTE_SCRIPT") {
+    gestioneazaExecuteScript(mesaj);
     return;
   }
 

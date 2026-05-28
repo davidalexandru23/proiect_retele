@@ -13,7 +13,8 @@ In etapele 1-2 sunt implementate:
 - baza pentru executia de comenzi compuse (validare cerere)
 
 In etapa 2, serverul accepta cereri de executie, valideaza comenzile si fisierele, dar nu executa inca scripturile pe tot pipeline-ul.
-Executia reala si propagarea datelor prin pipeline vor fi implementate in etapele urmatoare.
+
+In etapa 3, serverul trimite primul script din pipeline catre clientul care il detine. Clientul ruleaza scriptul Bash local si intoarce outputul catre server. Propagarea prin restul pipeline-ului nu este inca implementata.
 
 
 
@@ -25,6 +26,7 @@ Serverul:
 - tine evidenta clientilor conectati
 - tine maparea `scriptName -> clientId`
 - tine comenzile compuse `commandName -> pipeline`
+- gestioneaza executiile active cu `executionId`
 
 Clientul:
 
@@ -32,6 +34,7 @@ Clientul:
 - trimite un mesaj `HELLO`
 - accepta comenzi simple din terminal
 - afiseaza raspunsurile primite de la server
+- ruleaza scripturi Bash local la cererea serverului (`EXECUTE_SCRIPT`)
 
 ## Structura proiectului
 
@@ -64,7 +67,7 @@ Exemplu:
 {"type":"HELLO","clientName":"clientA"}
 ```
 
-Mesaje acceptate:
+### Mesaje client -> server
 
 ```json
 {"type":"HELLO","clientName":"clientA"}
@@ -73,7 +76,30 @@ Mesaje acceptate:
 {"type":"DELETE_COMMAND","commandName":"procesare"}
 {"type":"LIST_STATE"}
 {"type":"EXECUTE_COMMAND_REQUEST","fileName":"date.txt","contentBase64":"..."}
+{"type":"SCRIPT_OUTPUT","scriptName":"upper","outputContent":"VEVTVA==","executionId":"exec_123_client_1"}
 ```
+
+### Mesaje server -> client
+
+```json
+{"type":"OK","message":"Scripturi publicate cu succes"}
+{"type":"ERROR","message":"Scriptul upper este deja publicat de alt client"}
+{"type":"EXECUTE_SCRIPT","scriptName":"upper","inputContent":"dGVzdA==","executionId":"exec_123_client_1"}
+```
+
+### Mesaje noi in etapa 3
+
+**EXECUTE_SCRIPT** (server -> client):
+- `scriptName` - numele scriptului de executat
+- `inputContent` - continutul de intrare codificat in Base64
+- `executionId` - identificator unic al executiei (format: `exec_<timestamp>_<clientId>`)
+
+**SCRIPT_OUTPUT** (client -> server):
+- `scriptName` - numele scriptului executat
+- `outputContent` - rezultatul executiei codificat in Base64
+- `executionId` - identificatorul executiei (primit din EXECUTE_SCRIPT)
+
+In aceasta etapa, serverul trimite EXECUTE_SCRIPT doar catre clientul care detine **primul** script din pipeline. Outputul este logat pe server dar **nu este propagat** catre urmatorul script. Propagarea prin pipeline va fi implementata in etapa 4.
 
 Exemple de raspunsuri:
 
@@ -137,7 +163,7 @@ Comanda `execute-file`:
 - encodeaza continutul in Base64
 - trimite cererea catre server pentru validare si executie
 
-## Comportament important in etapele 1-2
+## Comportament important in etapele 1-3
 
 - Lista de scripturi a unui client poate fi publicata o singura data intr-o sesiune.
 - Daca un alt client a publicat deja un script, serverul respinge cererea.
@@ -147,9 +173,12 @@ Comanda `execute-file`:
 - Dupa deconectare, `list-state` poate arata comenzi cu `missingScripts`, adica pipeline-uri care nu mai pot fi executate complet in starea curenta.
 - Serverul raspunde cu eroare controlata la JSON invalid si continua sa ruleze.
 - Cererea `EXECUTE_COMMAND_REQUEST` este acceptata doar daca comanda exista si toate scripturile din pipeline sunt disponibile.
-- In etapa 2, serverul doar valideaza cererea, nu executa inca scripturile.
+- In etapa 3, serverul trimite EXECUTE_SCRIPT doar pentru primul script din pipeline.
+- Clientul ruleaza scriptul Bash local cu `child_process.execFile` si trimite outputul inapoi ca SCRIPT_OUTPUT.
+- Daca scriptul Bash esueaza, clientul captureaza eroarea si o trimite in SCRIPT_OUTPUT (nu crape).
+- Daca scriptul nu exista pe client sau inputul Base64 e nevalid, clientul raspunde cu ERROR.
 
-## Ce este implementat in etapele 1-2
+## Ce este implementat in etapele 1-3
 
 - comunicatie TCP simpla intre server si clienti
 - mesaje JSON separate pe linii
@@ -162,10 +191,14 @@ Comanda `execute-file`:
 - cererea `EXECUTE_COMMAND_REQUEST` cu validare de comanda, fisier si disponibilitate scripturi
 - citirea fisierelor in client cu encoding Base64
 - raportare controlata de erori la executie invalida
+- executia primului script din pipeline pe clientul care il detine (etapa 3)
+- mesaje noi: `EXECUTE_SCRIPT` si `SCRIPT_OUTPUT`
+- gestionare `executionId` unic per executie
+- clientul ruleaza scripturi Bash local cu `child_process.execFile`
 
 ## Testare manuala recomandata
 
-### Testare etapele 1-2 (validare cerere executie)
+### Testare etapa 3 (executie primul script din pipeline)
 
 1. Porneste serverul:
 
@@ -173,46 +206,47 @@ Comanda `execute-file`:
    docker compose up --build
    ```
 
-2. Porneste doi clienti locali:
+2. Porneste un client local:
 
    ```bash
    cd client
    node client.js clientA
    ```
 
-   ```bash
-   cd client
-   node client.js clientB
-   ```
-
 3. In `clientA`, publica scripturi si comanda:
 
    ```text
    publish-scripts upper,prefix
-   publish-command procesare upper,prefix
-   list-state
+   publish-command redimensionare upper,prefix
    ```
 
-4. Creeaza un fisier local pentru test:
+4. Creeaza un fisier local cu continut text:
 
    ```bash
-   echo "test content" > procesare
+   echo "hello world" > redimensionare
    ```
 
-5. In `clientA`, incearca sa executi comanda:
+5. In `clientA`, executa comanda:
 
    ```text
-   execute-file procesare
+   execute-file redimensionare
    ```
 
-   Serverul trebuie sa raspunda: `"OK": "Cererea de executie pentru comanda procesare a fost acceptata"`
+6. Verificari asteptate:
 
-6. Testeaza erori de validare:
-   - `execute-file necunoscuta` trebuie sa raspunda cu eroare de comanda inexistenta
-   - `execute-file` fara argument trebuie sa afiseze eroare local
-   - Sterge o comanda cu `delete-command procesare` si apoi `execute-file procesare` trebuie sa raspunda cu eroare
+   - Serverul accepta cererea si trimite `EXECUTE_SCRIPT` cu `scriptName: "upper"` catre `clientA`
+   - Clientul ruleaza `bash scripts/upper.sh` cu inputul `"hello world\n"`
+   - Clientul trimite `SCRIPT_OUTPUT` cu outputul `"HELLO WORLD\n"` (codificat Base64)
+   - Pe server apare in log: `Output de la upper: HELLO WORLD`
+   - Doar primul script (`upper`) este executat; `prefix` nu este executat inca
 
-### Testare etapele 1 (validari existente)
+7. Testeaza erori:
+
+   - Incearca `execute-file comanda_inexistenta` -> eroare comanda nu exista
+   - Sterge o comanda si incearca din nou -> eroare
+   - Deconecteaza clientul si incearca din alt client -> eroare client deconectat
+
+### Testare etapele 1-2 (validari existente)
 
 4. In `clientB`, verifica erorile:
 
@@ -249,17 +283,13 @@ Comanda `execute-file`:
 
 ## TODO pentru etapele urmatoare
 
-### Etapa 3 - Executie pe primul script
-- serverul trimite `EXECUTE_SCRIPT` catre clientul care detine primul script din pipeline
-- mesajul contine: scriptName, inputContent (Base64)
-- clientul ruleaza scriptul Bash local cu inputul
-
 ### Etapa 4 - Propagare prin pipeline
-- clientul intoarce `SCRIPT_OUTPUT` cu outputul executiei
-- serverul trimite outputul catre urmatorul script din pipeline
+- dupa primirea SCRIPT_OUTPUT, serverul trimite outputul catre urmatorul script din pipeline
+- serverul trimite EXECUTE_SCRIPT catre clientul care detine urmatorul script, cu outputContent ca inputContent
 - procesul continua pana la sfarsitul pipeline-ului
+- gestionare erori la fiecare pas din pipeline
 
 ### Etapa 5 - Raspuns final
-- serverul colecteaza outputul final
+- serverul colecteaza outputul final (dupa ultimul script din pipeline)
 - serverul trimite `EXECUTE_RESPONSE` catre clientul solicitant cu rezultatul
 - clientul afiseaza rezultatul final

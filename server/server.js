@@ -7,6 +7,7 @@ let urmatorClientId = 1;
 const clientiConectati = new Map();
 const scripturiByName = new Map();
 const comenziByName = new Map();
+const executiiActive = new Map();
 
 function esteTextValid(valoare) {
   return typeof valoare === "string" && valoare.trim().length > 0;
@@ -153,7 +154,7 @@ function construiesteState() {
   };
 }
 
-function gestioneazaExecuteCommand(clientSocket, mesaj) {
+function gestioneazaExecuteCommand(clientSocket, clientInfo, mesaj) {
   const numeFisier = esteTextValid(mesaj.fileName) ? mesaj.fileName.trim() : "";
   const continutBase64 = mesaj.contentBase64;
 
@@ -196,15 +197,94 @@ function gestioneazaExecuteCommand(clientSocket, mesaj) {
     return;
   }
 
-  // TODO: Trimite inputul catre clientul detinator al primului script din pipeline
-  // TODO: Executa scripturile in pipeline pe clientii care le detin
-  // TODO: Propaga outputul prin pipeline
-  // TODO: Trimite raspunsul final catre clientul care a cerut executia
+  // Genereaza un executionId unic
+  const executionId = `exec_${Date.now()}_${clientInfo.clientId}`;
+
+  // Identifica clientul care detine primul script din pipeline
+  const primulScript = pipeline[0];
+  const proprietarId = scripturiByName.get(primulScript);
+  const proprietarInfo = clientiConectati.get(proprietarId);
+
+  if (!proprietarInfo) {
+    raspundeEroare(clientSocket, `Clientul care detine scriptul ${primulScript} nu mai este conectat`);
+    return;
+  }
+
+  // Salveaza starea executiei
+  executiiActive.set(executionId, {
+    executionId,
+    pipeline: [...pipeline],
+    pasulCurent: 0,
+    inputContent: continutBase64,
+    clientSolicitant: clientInfo.clientId,
+    socketSolicitant: clientSocket
+  });
+
+  console.log(`[${executionId}] Executie pornita pentru comanda ${numeComanda}, pipeline: ${pipeline.join(" -> ")}`);
+  console.log(`[${executionId}] Trimite EXECUTE_SCRIPT ${primulScript} catre ${proprietarId}`);
+
+  // Trimite EXECUTE_SCRIPT catre clientul care detine primul script
+  sendMessage(proprietarInfo.clientSocket, {
+    type: "EXECUTE_SCRIPT",
+    scriptName: primulScript,
+    inputContent: continutBase64,
+    executionId
+  });
 
   sendMessage(clientSocket, {
     type: "OK",
-    message: `Cererea de executie pentru comanda ${numeComanda} a fost acceptata`
+    message: `Cererea de executie pentru comanda ${numeComanda} a fost acceptata (executionId: ${executionId})`
   });
+}
+
+function gestioneazaScriptOutput(clientSocket, clientInfo, mesaj) {
+  const { scriptName, outputContent, executionId } = mesaj;
+
+  if (!esteTextValid(executionId)) {
+    raspundeEroare(clientSocket, "executionId lipsa sau invalid");
+    return;
+  }
+
+  if (!esteTextValid(scriptName)) {
+    raspundeEroare(clientSocket, "scriptName lipsa sau invalid");
+    return;
+  }
+
+  if (typeof outputContent !== "string") {
+    raspundeEroare(clientSocket, "outputContent lipsa sau invalid");
+    return;
+  }
+
+  const executie = executiiActive.get(executionId);
+
+  if (!executie) {
+    raspundeEroare(clientSocket, `Executia ${executionId} nu exista sau a expirat`);
+    return;
+  }
+
+  const scriptAsteptat = executie.pipeline[executie.pasulCurent];
+
+  if (scriptName !== scriptAsteptat) {
+    raspundeEroare(clientSocket, `Script neasteptat: ${scriptName}, se astepta: ${scriptAsteptat}`);
+    return;
+  }
+
+  console.log(`[${executionId}] SCRIPT_OUTPUT primit pentru ${scriptName}`);
+
+  // TODO etapa 4: Propaga outputul catre urmatorul script din pipeline
+  // TODO etapa 4: Daca mai sunt scripturi in pipeline, trimite EXECUTE_SCRIPT catre urmatorul client
+  // TODO etapa 5: Daca pipeline-ul s-a terminat, trimite EXECUTE_RESPONSE catre clientul solicitant
+
+  // Deocamdata, logam outputul si curatam executia
+  try {
+    const outputDecodat = Buffer.from(outputContent, "base64").toString("utf8");
+    console.log(`[${executionId}] Output de la ${scriptName}: ${outputDecodat}`);
+  } catch (eroare) {
+    console.log(`[${executionId}] Output Base64 invalid de la ${scriptName}`);
+  }
+
+  executiiActive.delete(executionId);
+  console.log(`[${executionId}] Executie finalizata (doar primul script, pipeline incomplet)`);
 }
 
 function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
@@ -230,7 +310,10 @@ function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
       sendMessage(clientSocket, construiesteState());
       break;
     case "EXECUTE_COMMAND_REQUEST":
-      gestioneazaExecuteCommand(clientSocket, mesaj);
+      gestioneazaExecuteCommand(clientSocket, clientInfo, mesaj);
+      break;
+    case "SCRIPT_OUTPUT":
+      gestioneazaScriptOutput(clientSocket, clientInfo, mesaj);
       break;
     default:
       raspundeEroare(clientSocket, `Tip de mesaj necunoscut: ${mesaj.type}`);
