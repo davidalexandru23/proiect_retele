@@ -271,20 +271,46 @@ function gestioneazaScriptOutput(clientSocket, clientInfo, mesaj) {
 
   console.log(`[${executionId}] SCRIPT_OUTPUT primit pentru ${scriptName}`);
 
-  // TODO etapa 4: Propaga outputul catre urmatorul script din pipeline
-  // TODO etapa 4: Daca mai sunt scripturi in pipeline, trimite EXECUTE_SCRIPT catre urmatorul client
-  // TODO etapa 5: Daca pipeline-ul s-a terminat, trimite EXECUTE_RESPONSE catre clientul solicitant
-
-  // Deocamdata, logam outputul si curatam executia
   try {
     const outputDecodat = Buffer.from(outputContent, "base64").toString("utf8");
     console.log(`[${executionId}] Output de la ${scriptName}: ${outputDecodat}`);
   } catch (eroare) {
-    console.log(`[${executionId}] Output Base64 invalid de la ${scriptName}`);
+    console.log(`[${executionId}] Output binar primit de la ${scriptName}`);
   }
 
-  executiiActive.delete(executionId);
-  console.log(`[${executionId}] Executie finalizata (doar primul script, pipeline incomplet)`);
+  const urmatorulPas = executie.pasulCurent + 1;
+
+  if (urmatorulPas < executie.pipeline.length) {
+    const urmatorulScript = executie.pipeline[urmatorulPas];
+    const proprietarId = scripturiByName.get(urmatorulScript);
+    const proprietarInfo = clientiConectati.get(proprietarId);
+
+    if (!proprietarInfo) {
+      raspundeEroare(executie.socketSolicitant, `Eroare executie: clientul ${proprietarId} pentru scriptul ${urmatorulScript} s-a deconectat`);
+      executiiActive.delete(executionId);
+      return;
+    }
+
+    executie.pasulCurent = urmatorulPas;
+
+    console.log(`[${executionId}] Trimite EXECUTE_SCRIPT ${urmatorulScript} catre ${proprietarId}`);
+
+    sendMessage(proprietarInfo.clientSocket, {
+      type: "EXECUTE_SCRIPT",
+      scriptName: urmatorulScript,
+      inputContent: outputContent,
+      executionId
+    });
+  } else {
+    console.log(`[${executionId}] Executie finalizata, trimit rezultatul inapoi la client`);
+    sendMessage(executie.socketSolicitant, {
+      type: "EXECUTE_RESPONSE",
+      outputContent,
+      executionId
+    });
+
+    executiiActive.delete(executionId);
+  }
 }
 
 function gestioneazaMesaj(clientSocket, clientInfo, mesaj) {
