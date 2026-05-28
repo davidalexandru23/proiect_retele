@@ -328,6 +328,14 @@ function eliminaClient(clientInfo) {
       scripturiByName.delete(numeScript);
     }
   }
+
+  // Curata executiile active care implica clientul deconectat
+  for (const [executionId, executie] of executiiActive.entries()) {
+    if (executie.clientSolicitant === clientInfo.clientId) {
+      console.log(`[${executionId}] Executie anulata: clientul solicitant ${clientInfo.clientId} s-a deconectat`);
+      executiiActive.delete(executionId);
+    }
+  }
 }
 
 const serverTcp = net.createServer((clientSocket) => {
