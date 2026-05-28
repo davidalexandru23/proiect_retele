@@ -1,7 +1,7 @@
 const net = require("net");
 const { decodeMessage, sendMessage } = require("./protocol");
 
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 8807);
 
 let urmatorClientId = 1;
 const clientiConectati = new Map();

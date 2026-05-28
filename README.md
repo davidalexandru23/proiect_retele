@@ -20,7 +20,7 @@ In etapa 3, serverul trimite primul script din pipeline catre clientul care il d
 
 Serverul:
 
-- asculta pe portul `5000`
+- asculta pe portul `8807`
 - accepta mai multi clienti simultan
 - atribuie id-uri simple de forma `client_1`, `client_2`
 - tine evidenta clientilor conectati
@@ -123,7 +123,7 @@ Din radacina proiectului:
 docker compose up --build
 ```
 
-Serverul va porni pe portul `5000`.
+Serverul va porni pe portul `8807`.
 
 ## Rulare clienti local
 
@@ -143,7 +143,7 @@ npm install
 node client.js clientB
 ```
 
-Clientul se conecteaza implicit la `127.0.0.1:5000`.
+Clientul se conecteaza implicit la `127.0.0.1:8807`.
 
 ## Comenzi disponibile in client
 

@@ -6,7 +6,7 @@ const { execFile } = require("child_process");
 const { decodeMessage, sendMessage } = require("./protocol");
 
 const SERVER_HOST = process.env.SERVER_HOST || "127.0.0.1";
-const SERVER_PORT = Number(process.env.SERVER_PORT || 5000);
+const SERVER_PORT = Number(process.env.SERVER_PORT || 8807);
 const clientName = process.argv[2] || "client_local";
 
 let inputBuffer = "";
